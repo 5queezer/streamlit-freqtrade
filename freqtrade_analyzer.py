@@ -3,7 +3,6 @@ import pandas as pd
 import json
 import os
 import glob
-import matplotlib.pyplot as plt
 
 
 def load_json(filepath):
@@ -57,20 +56,12 @@ def extract_trades(json_path):
         "Max Drawdown": strategy_data.get('max_drawdown', "N/A"),
         "Best Pair": trades_df.groupby('pair')['profit_abs'].sum().idxmax(),
         "Worst Pair": trades_df.groupby('pair')['profit_abs'].sum().idxmin(),
+        "CAGR": strategy_data.get('cagr', "N/A"),
+        "Sortino": strategy_data.get('sortino', "N/A"),
+        "Sharpe": strategy_data.get('sharpe', "N/A"),
     }
 
     return trades_df, results, None
-
-
-def plot_balance(trades_df, strategy_name):
-    trades_df['cumulative_profit'] = trades_df['profit_abs'].cumsum()
-    plt.figure(figsize=(10, 5))
-    plt.plot(trades_df['cumulative_profit'], label=f"{strategy_name} Cumulative Profit")
-    plt.xlabel("Trades")
-    plt.ylabel("Profit")
-    plt.title(f"Balance Over Time - {strategy_name}")
-    plt.legend()
-    st.pyplot(plt)
 
 
 def main():
@@ -95,22 +86,32 @@ def main():
             trades_df, results, error = extract_trades(json_path)
 
             if error:
-                st.error(f"{strategy_name}: {error}")
+                pass
+                # st.error(f"{strategy_name}: {error}")
             else:
+                results["Details"] = f"details?strategy={strategy_name}&json_path={json_path}"
                 all_results.append(results)
-                st.subheader(f"Strategy: {strategy_name}")
-                st.json(results)
-
-                st.subheader("Balance Over Time")
-                plot_balance(trades_df, strategy_name)
-
-                st.subheader("Trade Data")
-                st.dataframe(trades_df[['pair', 'profit_abs', 'open_date', 'close_date']])
 
         if all_results:
-            st.subheader("Comparison of Backtest Results")
+            st.subheader("Overview of Backtest Results")
             results_df = pd.DataFrame(all_results)
-            st.dataframe(results_df)
+            st.data_editor(results_df, column_config={
+                "Details": st.column_config.LinkColumn("Details", display_text="View Details")
+            }, hide_index=True)
+
+    query_params = st.query_params
+    if "strategy" in query_params and "json_path" in query_params:
+        strategy_name = query_params["strategy"]
+        json_path = query_params["json_path"]
+        trades_df, results, error = extract_trades(json_path)
+
+        if error:
+            st.error(error)
+        else:
+            st.title(f"Details for {strategy_name}")
+            st.json(results)
+            st.subheader("Trade Data")
+            st.dataframe(trades_df[['pair', 'profit_abs', 'open_date', 'close_date']])
 
 
 if __name__ == "__main__":
