@@ -208,7 +208,7 @@ def draw_drawdown_chart(df: pd.DataFrame, strategy_name: str):
 
     avg_dd = df_sorted["drawdown"].mean()
     # This time as a datetime so that the axis is consistent
-    bull_market_top = datetime(2021, 11, 10).timestamp()
+    # bull_market_top = datetime(2021, 11, 10).timestamp()
 
     fig = go.Figure()
     fig.add_trace(
@@ -224,12 +224,12 @@ def draw_drawdown_chart(df: pd.DataFrame, strategy_name: str):
         annotation_position="top left"
     )
     # Since the x-axis is datetime, we pass a real datetime object
-    fig.add_vline(
-        x=bull_market_top,
-        line=dict(color="yellow", dash="dash"),
-        annotation_text="2021 Bull market top",
-        annotation_position="top right"
-    )
+    # fig.add_vline(
+    #     x=bull_market_top,
+    #     line=dict(color="yellow", dash="dash"),
+    #     annotation_text="2021 Bull market top",
+    #     annotation_position="top right"
+    # )
     fig.update_xaxes(type="date")
     fig.update_layout(
         title=f"Strategy {strategy_name} Drawdown Analysis",
@@ -251,13 +251,15 @@ def draw_winloss_ratio_chart(df: pd.DataFrame, strategy_name: str):
     df_sorted = df.sort_values("open_date").copy()
     df_sorted.set_index("open_date", inplace=True)
 
-    # Resample weekly
-    weekly = df_sorted.resample("W").agg(
-        profit_abs=lambda x: (x > 0).sum() - (x < 0).sum()
-    )
+    # Resample weekly and count wins and losses
+    weekly = pd.DataFrame()
     weekly["wins"] = df_sorted["profit_abs"].resample("W").apply(lambda x: (x > 0).sum())
     weekly["losses"] = df_sorted["profit_abs"].resample("W").apply(lambda x: (x < 0).sum())
 
+    # Calculate net wins (positive - negative trades)
+    weekly["net_wins"] = weekly["wins"] - weekly["losses"]
+
+    # Compute win/loss ratio safely
     def ratio_func(row):
         if row["losses"] == 0 and row["wins"] > 0:
             return float("inf")
@@ -267,23 +269,27 @@ def draw_winloss_ratio_chart(df: pd.DataFrame, strategy_name: str):
 
     weekly["ratio"] = weekly.apply(ratio_func, axis=1)
 
+    # Separate positive and negative ratios
     weekly["ratio_pos"] = weekly["ratio"].where(weekly["ratio"] >= 1)
     weekly["ratio_neg"] = weekly["ratio"].where(weekly["ratio"] < 1)
 
-    bull_market_top = datetime(2021, 11, 10).timestamp()
+    # bull_market_top = datetime(2021, 11, 10).timestamp()
+
     fig = go.Figure()
     fig.add_trace(
-        go.Bar(x=weekly.index, y=weekly["ratio_pos"], name="Ratio >= 1", marker_color="green")
+        go.Bar(x=weekly.index, y=weekly["ratio_pos"], name="Win/Loss Ratio >= 1", marker_color="green")
     )
     fig.add_trace(
-        go.Bar(x=weekly.index, y=weekly["ratio_neg"], name="Ratio < 1", marker_color="red")
+        go.Bar(x=weekly.index, y=weekly["ratio_neg"], name="Win/Loss Ratio < 1", marker_color="red")
     )
-    fig.add_vline(
-        x=bull_market_top,
-        line=dict(color="yellow", dash="dash"),
-        annotation_text="2021 Bull market top",
-        annotation_position="top right"
-    )
+
+    # fig.add_vline(
+    #     x=bull_market_top,
+    #     line=dict(color="yellow", dash="dash"),
+    #     annotation_text="2021 Bull market top",
+    #     annotation_position="top right"
+    # )
+
     fig.update_xaxes(type="date")
     fig.update_layout(
         barmode="relative",
@@ -338,7 +344,7 @@ def compare_strategies(all_strategies):
     for each strategy's trades, grouped weekly.
     Adds a vertical line for the 2021 bull market top as a datetime.
     """
-    bull_market_top = datetime(2021, 11, 10).timestamp()
+    # bull_market_top = datetime(2021, 11, 10).timestamp()
     fig = go.Figure()
 
     for strat_name, df in all_strategies.items():
@@ -357,12 +363,12 @@ def compare_strategies(all_strategies):
             )
         )
 
-    fig.add_vline(
-        x=bull_market_top,
-        line=dict(color="yellow", dash="dash"),
-        annotation_text="2021 Bull market top",
-        annotation_position="top right"
-    )
+    # fig.add_vline(
+    #     x=bull_market_top,
+    #     line=dict(color="yellow", dash="dash"),
+    #     annotation_text="2021 Bull market top",
+    #     annotation_position="top right"
+    # )
     fig.update_xaxes(type="date")
     fig.update_layout(
         title="Top strategies cumulative profits performance",
@@ -511,13 +517,13 @@ def main():
             secondary_y=True
         )
         # Mark bull market top as a datetime
-        bull_market_top = datetime(2021, 11, 10).timestamp()
-        fig.add_vline(
-            x=bull_market_top,
-            line=dict(color="yellow", dash="dash"),
-            annotation_text="2021 Bull market top",
-            annotation_position="top right"
-        )
+        # bull_market_top = datetime(2021, 11, 10).timestamp()
+        # fig.add_vline(
+        #     x=bull_market_top,
+        #     line=dict(color="yellow", dash="dash"),
+        #     annotation_text="2021 Bull market top",
+        #     annotation_position="top right"
+        # )
         fig.update_xaxes(type="date")
         fig.update_xaxes(title_text="Time")
         fig.update_yaxes(title_text="Counts", secondary_y=False)
