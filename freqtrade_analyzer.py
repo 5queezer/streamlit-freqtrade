@@ -1,8 +1,10 @@
-import streamlit as st
-import pandas as pd
+import glob
 import json
 import os
-import glob
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import streamlit as st
 
 
 def load_json(filepath):
@@ -74,6 +76,9 @@ def main():
             st.error("Folder not found.")
             return
 
+        progress_text = "Operation in progress. Please wait."
+        pbar = st.progress(0, text=progress_text)
+
         backtest_files = find_backtest_files(folder)
 
         if not backtest_files:
@@ -81,16 +86,22 @@ def main():
             return
 
         all_results = []
+        total_count = len(backtest_files)
 
-        for strategy_name, meta_data, json_path in backtest_files:
+        for idx, (strategy_name, meta_data, json_path) in enumerate(backtest_files):
             trades_df, results, error = extract_trades(json_path)
 
             if error:
                 pass
-                # st.error(f"{strategy_name}: {error}")
             else:
                 results["Details"] = f"details?strategy={strategy_name}&json_path={json_path}"
                 all_results.append(results)
+
+            progress_text = f"Scanning {strategy_name}"
+            percent_complete = (idx + 1) / total_count
+            pbar.progress(percent_complete, text=progress_text)
+
+        pbar.empty()
 
         if all_results:
             st.subheader("Overview of Backtest Results")
@@ -112,6 +123,21 @@ def main():
             st.json(results)
             st.subheader("Trade Data")
             st.dataframe(trades_df[['pair', 'profit_abs', 'open_date', 'close_date']])
+
+            # Plot profit over time
+            st.subheader("Cumulative Profit Over Time")
+            trades_df['open_date'] = pd.to_datetime(trades_df['open_date'])
+            trades_df = trades_df.sort_values("open_date")
+            trades_df["cumulative_profit"] = trades_df["profit_abs"].cumsum()
+
+            fig, ax = plt.subplots()
+            ax.plot(trades_df["open_date"], trades_df["cumulative_profit"], marker='o', linestyle='-')
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Cumulative Profit")
+            ax.set_title("Cumulative Profit Over Time")
+            ax.grid()
+
+            st.pyplot(fig)
 
 
 if __name__ == "__main__":
