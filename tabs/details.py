@@ -1,4 +1,3 @@
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
@@ -72,14 +71,16 @@ def show_details(query_params: dict):
     # Calculate trade duration
     trades_df["trade_duration"] = trades_df["close_date"] - trades_df["open_date"]
     trades_df["duration_display"] = trades_df["trade_duration"].apply(
-        lambda x: f"{x.days}d" if x.days > 0 else f"{x.seconds//3600}:{(x.seconds//60)%60:02d}"
+        lambda x: f"{x.days}d" if x.days > 0 else f"{x.seconds // 3600}:{(x.seconds // 60) % 60:02d}"
     )
 
     # Select relevant columns and copy to prevent modifying original DataFrame
     trade_table = trades_df[["pair", "profit_abs", "profit_perc", "profit_color", "duration_display"]].copy()
 
     # Rename columns
-    trade_table.rename(columns={"profit_abs": "Profit (Fiat)", "profit_perc": "Profit %", "duration_display": "Duration"}, inplace=True)
+    trade_table.rename(
+        columns={"profit_abs": "Profit (Fiat)", "profit_perc": "Profit %", "duration_display": "Duration"},
+        inplace=True)
 
     # Apply color formatting
     trade_table["Profit (Fiat)"] = trade_table.apply(
@@ -115,10 +116,14 @@ def show_details(query_params: dict):
     df_sorted["cumulative_profit"] = df_sorted["profit_abs"].cumsum()
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(x=df_sorted["open_date"], y=df_sorted["cumulative_wins"], name="Cumulative Wins", line=dict(color="green")), secondary_y=False)
-    fig.add_trace(go.Scatter(x=df_sorted["open_date"], y=df_sorted["cumulative_draws"], name="Cumulative Draws", line=dict(color="blue")), secondary_y=False)
-    fig.add_trace(go.Scatter(x=df_sorted["open_date"], y=df_sorted["cumulative_losses"], name="Cumulative Losses", line=dict(color="red")), secondary_y=False)
-    fig.add_trace(go.Scatter(x=df_sorted["open_date"], y=df_sorted["cumulative_profit"], name="Cumulative Profit", line=dict(color="gold")), secondary_y=True)
+    fig.add_trace(go.Scatter(x=df_sorted["open_date"], y=df_sorted["cumulative_wins"], name="Cumulative Wins",
+                             line=dict(color="green")), secondary_y=False)
+    fig.add_trace(go.Scatter(x=df_sorted["open_date"], y=df_sorted["cumulative_draws"], name="Cumulative Draws",
+                             line=dict(color="blue")), secondary_y=False)
+    fig.add_trace(go.Scatter(x=df_sorted["open_date"], y=df_sorted["cumulative_losses"], name="Cumulative Losses",
+                             line=dict(color="red")), secondary_y=False)
+    fig.add_trace(go.Scatter(x=df_sorted["open_date"], y=df_sorted["cumulative_profit"], name="Cumulative Profit",
+                             line=dict(color="gold")), secondary_y=True)
 
     fig.update_xaxes(type="date", title_text="Time")
     fig.update_yaxes(title_text="Counts", secondary_y=False)
