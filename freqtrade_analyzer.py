@@ -1,95 +1,58 @@
 import glob
-import json
-import math
 import os
-import zipfile
+import pickle
+import hashlib
 
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 
-from charts.allcharts import draw_drawdown_chart, draw_winloss_ratio_chart, draw_distribution_charts, draw_cumulative_profit_chart
+from tabs.compare import compare_strategies
+from tabs.details import show_details
+from utils.json import load_json
+from utils.trades import extract_trades
 
 st.set_page_config(layout="wide", page_title="Freqtrade Multi-Backtest Analyzer")
 
-# Remove scrollbars and expand tables
-st.markdown(
-    """
-    <style>
-    .block-container .dataframe-container {
-        max-height: none !important;
-        overflow-y: visible !important;
-    }
-    thead tr th {
-        background-color: #1f2f3f !important;
-        color: #ffffff !important;
-        text-align: center !important;
-    }
-    tbody tr td {
-        background-color: #2f3f4f !important;
-        color: #eeeeee !important;
-        text-align: center !important;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+CACHE_FILE = "backtest_cache.pkl"
+TRADES_CACHE_FILE = "trades_data_cache.pkl"
+RESULTS_CACHE_FILE = "results_cache.pkl"
 
 
-def load_json(filepath: str):
-    if filepath.endswith(".zip"):
-        with zipfile.ZipFile(filepath, "r") as z:
-            for name in z.namelist():
-                if name.endswith(".json"):
-                    with z.open(name) as f:
-                        return json.load(f)
-        return None
-    else:
-        with open(filepath, "r") as f:
-            return json.load(f)
+def compute_folder_hash(folder: str) -> str:
+    """Computes a hash of all file modification times in the folder for cache invalidation."""
+    file_metadata = [(filepath, os.path.getmtime(filepath)) for filepath in glob.glob(os.path.join(folder, "*")) if os.path.exists(filepath)]
+    return hashlib.md5(str(file_metadata).encode()).hexdigest()
 
 
-def compute_streaks(trades_df: pd.DataFrame) -> dict:
-    df_sorted = trades_df.sort_values("open_date")
-    outcomes = (df_sorted["profit_abs"] > 0).astype(int).tolist()
+def load_cache(cache_file: str, folder: str):
+    """Loads cached data if cache exists and is still valid."""
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as f:
+                cached_data = pickle.load(f)
+            if isinstance(cached_data, dict) and "folder_hash" in cached_data and "data" in cached_data:
+                if cached_data["folder_hash"] == compute_folder_hash(folder):
+                    return cached_data["data"]
+        except (EOFError, pickle.UnpicklingError, KeyError):
+            st.warning(f"Cache file `{cache_file}` corrupted. Recomputing...")
+    return None
 
-    win_count, loss_count = 0, 0
-    max_win, max_loss = 0, 0
-    win_streaks, loss_streaks = [], []
 
-    for outcome in outcomes:
-        if outcome == 1:
-            win_count += 1
-            max_win = max(max_win, win_count)
-            if loss_count > 0:
-                loss_streaks.append(loss_count)
-            loss_count = 0
-        else:
-            loss_count += 1
-            max_loss = max(max_loss, loss_count)
-            if win_count > 0:
-                win_streaks.append(win_count)
-            win_count = 0
-
-    if win_count > 0:
-        win_streaks.append(win_count)
-    if loss_count > 0:
-        loss_streaks.append(loss_count)
-
-    avg_win = sum(win_streaks) / len(win_streaks) if win_streaks else 0
-    avg_loss = sum(loss_streaks) / len(loss_streaks) if loss_streaks else 0
-
-    return {
-        "Winstr. Max": max_win,
-        "Winstr. Avg": round(avg_win, 1),
-        "Losestr. Max": max_loss,
-        "Losestr. Avg": round(avg_loss, 1),
-    }
+def save_cache(cache_file: str, folder: str, data):
+    """Saves data to cache."""
+    try:
+        with open(cache_file, "wb") as f:
+            pickle.dump({"folder_hash": compute_folder_hash(folder), "data": data}, f)
+    except Exception as e:
+        st.warning(f"Failed to save cache `{cache_file}`: {e}")
 
 
 def find_backtest_files(folder: str):
+    """Finds and maps backtest JSON and metadata files in a given folder."""
+    cached_data = load_cache(CACHE_FILE, folder)
+    if cached_data is not None:
+        return cached_data  # Return cached backtest files directly
+
     meta_files = glob.glob(os.path.join(folder, "*.meta.json"))
     data_files = glob.glob(os.path.join(folder, "*[!meta].json")) + glob.glob(os.path.join(folder, "*.zip"))
     file_map = {os.path.basename(f): f for f in data_files}
@@ -101,149 +64,44 @@ def find_backtest_files(folder: str):
             continue
         strategy_name = list(meta_data.keys())[0]
         guessed_json = os.path.basename(meta_path).replace(".meta.json", ".json")
-        json_path = file_map.get(guessed_json)
-        if not json_path:
-            guessed_zip = guessed_json.replace(".json", ".zip")
-            json_path = file_map.get(guessed_zip)
+        json_path = file_map.get(guessed_json) or file_map.get(guessed_json.replace(".json", ".zip"))
+
         if json_path and os.path.exists(json_path):
             backtest_data.append((strategy_name, meta_data[strategy_name], json_path))
+
+    save_cache(CACHE_FILE, folder, backtest_data)
     return backtest_data
 
 
-def extract_trades(json_path: str):
-    data = load_json(json_path)
-    if not data or "strategy" not in data:
-        return None, None, "Invalid data."
-    strategy_keys = list(data["strategy"].keys())
-    if not strategy_keys:
-        return None, None, "Invalid strategy key."
+def load_trades_data(folder: str, backtest_files: list):
+    """Loads cached trade data if available, otherwise extracts it from backtest files."""
+    cached_trades_data = load_cache(TRADES_CACHE_FILE, folder)
+    if cached_trades_data is not None:
+        return cached_trades_data, True  # Return cached data and flag as cached
 
-    strategy_name = strategy_keys[0]
-    strategy_data = data["strategy"].get(strategy_name, {})
-    trades = strategy_data.get("trades", [])
-    if not trades:
-        return None, None, "No trades found."
+    all_trades_data = {}
+    for strategy_name, meta_data, json_path in backtest_files:
+        trades_df, _, error = extract_trades(json_path)
+        all_trades_data[strategy_name] = trades_df if not error else pd.DataFrame()
 
-    trades_df = pd.DataFrame(trades)
-    trades_df["profit_abs"] = trades_df["profit_abs"].astype(float)
-    trades_df["open_date"] = pd.to_datetime(trades_df["open_date"])
-    trades_df["close_date"] = pd.to_datetime(trades_df["close_date"])
-
-    start_date = trades_df["open_date"].min()
-    end_date = trades_df["close_date"].max()
-    days_diff = (end_date - start_date).days + 1 if pd.notnull(end_date) else float("nan")
-
-    start_balance = 10000.0
-    total_profit = trades_df["profit_abs"].sum()
-    end_balance = start_balance + total_profit
-    profit_pct = ((end_balance - start_balance) / start_balance) * 100 if start_balance else float("nan")
-
-    max_dd = strategy_data.get("max_drawdown", float("nan"))
-    cagr = strategy_data.get("cagr", float("nan"))
-    sortino = strategy_data.get("sortino", float("nan"))
-    sharpe = strategy_data.get("sharpe", float("nan"))
-
-    try:
-        if (not math.isnan(cagr)) and (not math.isnan(max_dd)) and max_dd != 0:
-            calmar = cagr / max_dd
-        else:
-            calmar = float("nan")
-    except:
-        calmar = float("nan")
-
-    pos_sum = trades_df.loc[trades_df["profit_abs"] > 0, "profit_abs"].sum()
-    neg_sum = trades_df.loc[trades_df["profit_abs"] < 0, "profit_abs"].sum()
-    profit_factor = pos_sum / abs(neg_sum) if neg_sum else float("nan")
-
-    pair_counts = trades_df["pair"].nunique()
-    pairs_pct = (pair_counts / 50) * 100
-
-    streaks = compute_streaks(trades_df)
-    win_rate = (trades_df["profit_abs"] > 0).mean() * 100
-
-    score = (
-            (profit_pct * 0.2)
-            + (win_rate * 0.2)
-            + ((sortino if not math.isnan(sortino) else 0) * 0.2)
-            + ((sharpe if not math.isnan(sharpe) else 0) * 0.2)
-            - ((max_dd if not math.isnan(max_dd) else 0) * 0.2)
-    )
-
-    results = {
-        "Strategy": strategy_name,
-        "Timeframe": strategy_data.get("timeframe", "N/A"),
-        "Start Balance": round(start_balance, 2),
-        "End Balance": round(end_balance, 2),
-        "Start Date": str(start_date.date()) if pd.notnull(start_date) else "N/A",
-        "End Date": str(end_date.date()) if pd.notnull(end_date) else "N/A",
-        "Days": days_diff,
-        "Profit %": round(profit_pct, 2),
-        "Win %": round(win_rate, 2),
-        "Trades": len(trades_df),
-        "Winstr. Max": streaks["Winstr. Max"],
-        "Winstr. Avg": streaks["Winstr. Avg"],
-        "Losestr. Max": streaks["Losestr. Max"],
-        "Losestr. Avg": streaks["Losestr. Avg"],
-        "CAGR": round(cagr, 2) if not math.isnan(cagr) else "N/A",
-        "Max Drawdown": round(max_dd, 2) if not math.isnan(max_dd) else "N/A",
-        "Calmar Ratio": round(calmar, 2) if not math.isnan(calmar) else "N/A",
-        "Sortino": round(sortino, 2) if not math.isnan(sortino) else "N/A",
-        "Sharpe": round(sharpe, 2) if not math.isnan(sharpe) else "N/A",
-        "Profit Factor": round(profit_factor, 2) if not math.isnan(profit_factor) else "N/A",
-        "Pairs %": round(pairs_pct, 2),
-        "Total Score": round(score, 1),
-    }
-    return trades_df, results, None
+    save_cache(TRADES_CACHE_FILE, folder, all_trades_data)
+    return all_trades_data, False  # Return new data and flag as not cached
 
 
-def compare_strategies(all_strategies):
-    """
-    Renders a multi-line chart comparing cumulative profits
-    for each strategy's trades, grouped weekly.
-    Adds a vertical line for the 2021 bull market top as a datetime.
-    """
-    # bull_market_top = datetime(2021, 11, 10).timestamp()
-    fig = go.Figure()
+def load_results_cache(folder: str):
+    """Loads cached results data for the overview table."""
+    cached_results = load_cache(RESULTS_CACHE_FILE, folder)
+    return cached_results if cached_results else []
 
-    for strat_name, df in all_strategies.items():
-        if df.empty:
-            continue
-        df_sorted = df.sort_values("open_date").copy()
-        df_sorted.set_index("open_date", inplace=True)
 
-        weekly = df_sorted["profit_abs"].resample("W").sum()
-        cum_profit = weekly.cumsum()
-
-        fig.add_trace(
-            go.Scatter(
-                x=cum_profit.index, y=cum_profit,
-                mode="lines", name=strat_name
-            )
-        )
-
-    # fig.add_vline(
-    #     x=bull_market_top,
-    #     line=dict(color="yellow", dash="dash"),
-    #     annotation_text="2021 Bull market top",
-    #     annotation_position="top right"
-    # )
-    fig.update_xaxes(type="date")
-    fig.update_layout(
-        title="Top strategies cumulative profits performance",
-        xaxis_title="Time",
-        yaxis_title="Cumulative Profit",
-        legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)"),
-        plot_bgcolor="#000000",
-        paper_bgcolor="#000000",
-        font=dict(color="#EEEEEE"),
-        hovermode="x unified",
-    )
-    return fig
+def save_results_cache(folder: str, results: list):
+    """Saves results data for the overview table."""
+    save_cache(RESULTS_CACHE_FILE, folder, results)
 
 
 def main():
     query_params = st.query_params
-    in_details = ("strategy" in query_params and "json_path" in query_params)
+    in_details = "strategy" in query_params and "json_path" in query_params
 
     if not in_details:
         st.title("Freqtrade Multi-Backtest Analyzer")
@@ -254,28 +112,43 @@ def main():
             if not os.path.exists(folder):
                 st.error("Folder not found.")
                 return
-            pbar = st.progress(0, text="Scanning...")
-            backtest_files = find_backtest_files(folder)
-            if not backtest_files:
-                st.warning("No valid backtest files found.")
-                return
 
-            all_results = []
-            total_count = len(backtest_files)
-            all_trades_data = {}  # For multi-strategy comparison chart
+            all_results = load_results_cache(folder)  # Load cached overview table
 
-            for idx, (strategy_name, meta_data, json_path) in enumerate(backtest_files):
-                trades_df, results, error = extract_trades(json_path)
-                if not error:
-                    results["Details"] = f"?strategy={strategy_name}&json_path={json_path}"
-                    all_results.append(results)
-                    all_trades_data[strategy_name] = trades_df
+            with st.status("Checking cache...", expanded=True) as status:
+                backtest_files = find_backtest_files(folder)
+
+                if not backtest_files:
+                    status.update(label="No valid backtest files found.", state="error")
+                    return
+
+                all_trades_data, is_cached = load_trades_data(folder, backtest_files)
+
+                if is_cached and all_results:
+                    status.update(label="Cache loaded successfully. Skipping extraction.", state="complete")
                 else:
-                    all_trades_data[strategy_name] = pd.DataFrame()
-                pbar.progress((idx + 1) / total_count, text=f"Scanning {strategy_name}")
+                    status.update(label="Cache not found. Extracting trades...", state="running")
+                    all_results = []  # Reset results since new extraction is needed
 
-            pbar.empty()
+                    total_count = len(backtest_files)
+                    pbar = st.progress(0, text="Scanning...")
 
+                    for idx, (strategy_name, meta_data, json_path) in enumerate(backtest_files):
+                        trades_df = all_trades_data.get(strategy_name, pd.DataFrame())
+                        if not trades_df.empty:
+                            _, results, error = extract_trades(json_path)
+                            if not error:
+                                results["Details"] = f"?strategy={strategy_name}&json_path={json_path}"
+                                all_results.append(results)
+
+                        pbar.progress((idx + 1) / total_count, text=f"Scanning {strategy_name}")
+
+                    pbar.empty()
+                    status.update(label="Trade extraction complete.", state="complete")
+
+                    save_results_cache(folder, all_results)  # Save extracted results to cache
+
+            # Ensure UI elements are populated
             if all_results:
                 tab1, tab2 = st.tabs(["Overview Table", "Comparison Chart"])
 
@@ -299,98 +172,7 @@ def main():
                     st.plotly_chart(fig_compare, use_container_width=True)
 
     else:
-        # We are in details mode
-        strategy_name = query_params["strategy"]
-        json_path = query_params["json_path"]
-        trades_df, results, error = extract_trades(json_path)
-
-        if error:
-            st.error(error)
-            return
-
-        st.title(f"Details for {strategy_name}")
-        st.subheader("Backtest Summary")
-        detail_df = pd.DataFrame([results]).fillna("N/A").T.rename(columns={0: "Value"})
-        if "Optimized" in detail_df.index:
-            detail_df.drop(index=["Optimized"], inplace=True)
-        st.table(detail_df)
-
-        st.subheader("Trade Data")
-        st.dataframe(trades_df[["pair", "profit_abs", "open_date", "close_date"]])
-
-        st.subheader("Profit Over Time")
-        fig_cp = draw_cumulative_profit_chart(trades_df, strategy_name)
-        st.plotly_chart(fig_cp, use_container_width=True)
-
-        st.subheader("Drawdown Chart")
-        fig_dd = draw_drawdown_chart(trades_df, strategy_name)
-        st.plotly_chart(fig_dd, use_container_width=True)
-
-        st.subheader("Win/Loss Ratio")
-        fig_wl = draw_winloss_ratio_chart(trades_df, strategy_name)
-        st.plotly_chart(fig_wl, use_container_width=True)
-
-        st.subheader("Cumulative Profit & Win/Draw/Loss Counts")
-        df_sorted = trades_df.sort_values("open_date").copy()
-        df_sorted["cumulative_wins"] = (df_sorted["profit_abs"] > 0).cumsum()
-        df_sorted["cumulative_draws"] = (df_sorted["profit_abs"] == 0).cumsum()
-        df_sorted["cumulative_losses"] = (df_sorted["profit_abs"] < 0).cumsum()
-        df_sorted["cumulative_profit"] = df_sorted["profit_abs"].cumsum()
-
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-        fig.add_trace(
-            go.Scatter(
-                x=df_sorted["open_date"], y=df_sorted["cumulative_wins"],
-                name="Cumulative Wins", line=dict(color="green")
-            ),
-            secondary_y=False
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df_sorted["open_date"], y=df_sorted["cumulative_draws"],
-                name="Cumulative Draws", line=dict(color="blue")
-            ),
-            secondary_y=False
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df_sorted["open_date"], y=df_sorted["cumulative_losses"],
-                name="Cumulative Losses", line=dict(color="red")
-            ),
-            secondary_y=False
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=df_sorted["open_date"], y=df_sorted["cumulative_profit"],
-                name="Cumulative Profit", line=dict(color="gold")
-            ),
-            secondary_y=True
-        )
-        # Mark bull market top as a datetime
-        # bull_market_top = datetime(2021, 11, 10).timestamp()
-        # fig.add_vline(
-        #     x=bull_market_top,
-        #     line=dict(color="yellow", dash="dash"),
-        #     annotation_text="2021 Bull market top",
-        #     annotation_position="top right"
-        # )
-        fig.update_xaxes(type="date")
-        fig.update_xaxes(title_text="Time")
-        fig.update_yaxes(title_text="Counts", secondary_y=False)
-        fig.update_yaxes(title_text="Cumulative Profit", secondary_y=True)
-        fig.update_layout(
-            title=f"Strategy {strategy_name}: Win/Draw/Lose Counts & Profit",
-            legend=dict(x=0.01, y=0.99, bgcolor="rgba(0,0,0,0)"),
-            plot_bgcolor="#000000",
-            paper_bgcolor="#000000",
-            font=dict(color="#EEEEEE"),
-            hovermode="x unified",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.subheader("Winrate & Profit Distributions")
-        fig_dist = draw_distribution_charts(trades_df, strategy_name)
-        st.plotly_chart(fig_dist, use_container_width=True)
+        show_details(query_params)
 
 
 if __name__ == "__main__":
