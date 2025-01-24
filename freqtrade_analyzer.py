@@ -3,13 +3,12 @@ import json
 import math
 import os
 import zipfile
-from datetime import datetime
 
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 st.set_page_config(layout="wide", page_title="Freqtrade Multi-Backtest Analyzer")
 
@@ -130,12 +129,12 @@ def extract_trades(json_path: str):
 
     start_date = trades_df["open_date"].min()
     end_date = trades_df["close_date"].max()
-    days_diff = (end_date - start_date).days + 1 if pd.notnull(end_date) else 0
+    days_diff = (end_date - start_date).days + 1 if pd.notnull(end_date) else float("nan")
 
     start_balance = 10000.0
     total_profit = trades_df["profit_abs"].sum()
     end_balance = start_balance + total_profit
-    profit_pct = ((end_balance - start_balance) / start_balance) * 100 if start_balance else 0
+    profit_pct = ((end_balance - start_balance) / start_balance) * 100 if start_balance else float("nan")
 
     max_dd = strategy_data.get("max_drawdown", float("nan"))
     cagr = strategy_data.get("cagr", float("nan"))
@@ -171,7 +170,11 @@ def extract_trades(json_path: str):
     results = {
         "Strategy": strategy_name,
         "Timeframe": strategy_data.get("timeframe", "N/A"),
+        "Start Balance": round(start_balance, 2),
         "End Balance": round(end_balance, 2),
+        "Start Date": str(start_date.date()) if pd.notnull(start_date) else "N/A",
+        "End Date": str(end_date.date()) if pd.notnull(end_date) else "N/A",
+        "Days": days_diff,
         "Profit %": round(profit_pct, 2),
         "Win %": round(win_rate, 2),
         "Trades": len(trades_df),
@@ -187,9 +190,6 @@ def extract_trades(json_path: str):
         "Profit Factor": round(profit_factor, 2) if not math.isnan(profit_factor) else "N/A",
         "Pairs %": round(pairs_pct, 2),
         "Total Score": round(score, 1),
-        "Start Date": str(start_date.date()) if pd.notnull(start_date) else "N/A",
-        "End Date": str(end_date.date()) if pd.notnull(end_date) else "N/A",
-        "Days": days_diff,
     }
     return trades_df, results, None
 
@@ -460,7 +460,7 @@ def main():
         st.subheader("Trade Data")
         st.dataframe(trades_df[["pair", "profit_abs", "open_date", "close_date"]])
 
-        st.subheader("Interactive Profit Over Time")
+        st.subheader("Profit Over Time")
         trades_df = trades_df.sort_values("open_date")
         trades_df["cumulative_profit"] = trades_df["profit_abs"].cumsum()
         fig = px.line(
