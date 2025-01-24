@@ -10,6 +10,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
+from charts.allcharts import draw_drawdown_chart, draw_winloss_ratio_chart, draw_distribution_charts, draw_cumulative_profit_chart
+
 st.set_page_config(layout="wide", page_title="Freqtrade Multi-Backtest Analyzer")
 
 # Remove scrollbars and expand tables
@@ -194,150 +196,6 @@ def extract_trades(json_path: str):
     return trades_df, results, None
 
 
-def draw_drawdown_chart(df: pd.DataFrame, strategy_name: str):
-    """
-    Plots a drawdown chart over time using the running peak logic.
-    Adds a horizontal line for the average drawdown,
-    plus a dashed vertical line at a datetime bull_market_top.
-    """
-    df_sorted = df.sort_values("open_date").copy()
-    df_sorted["cumulative_profit"] = df_sorted["profit_abs"].cumsum()
-    df_sorted["peak"] = df_sorted["cumulative_profit"].cummax()
-    df_sorted["drawdown"] = (df_sorted["peak"] - df_sorted["cumulative_profit"]) / df_sorted["peak"] * 100
-    df_sorted["drawdown"] = df_sorted["drawdown"].fillna(0)
-
-    avg_dd = df_sorted["drawdown"].mean()
-    # This time as a datetime so that the axis is consistent
-    # bull_market_top = datetime(2021, 11, 10).timestamp()
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=df_sorted["open_date"], y=df_sorted["drawdown"], name="Drawdown (%)",
-            line=dict(color="red")
-        )
-    )
-    fig.add_hline(
-        y=avg_dd,
-        line=dict(color="green"),
-        annotation_text=f"Average Drawdown (%): {round(avg_dd, 2)}",
-        annotation_position="top left"
-    )
-    # Since the x-axis is datetime, we pass a real datetime object
-    # fig.add_vline(
-    #     x=bull_market_top,
-    #     line=dict(color="yellow", dash="dash"),
-    #     annotation_text="2021 Bull market top",
-    #     annotation_position="top right"
-    # )
-    fig.update_xaxes(type="date")
-    fig.update_layout(
-        title=f"Strategy {strategy_name} Drawdown Analysis",
-        xaxis_title="Time",
-        yaxis_title="Drawdown (%)",
-        plot_bgcolor="#000000",
-        paper_bgcolor="#000000",
-        font=dict(color="#EEEEEE"),
-        hovermode="x unified",
-    )
-    return fig
-
-
-def draw_winloss_ratio_chart(df: pd.DataFrame, strategy_name: str):
-    """
-    Plots the Win/Loss ratio by week. Ratio >= 1 in green bars, < 1 in red bars,
-    plus a vline for the 2021 bull market top as a real datetime object.
-    """
-    df_sorted = df.sort_values("open_date").copy()
-    df_sorted.set_index("open_date", inplace=True)
-
-    # Resample weekly and count wins and losses
-    weekly = pd.DataFrame()
-    weekly["wins"] = df_sorted["profit_abs"].resample("W").apply(lambda x: (x > 0).sum())
-    weekly["losses"] = df_sorted["profit_abs"].resample("W").apply(lambda x: (x < 0).sum())
-
-    # Calculate net wins (positive - negative trades)
-    weekly["net_wins"] = weekly["wins"] - weekly["losses"]
-
-    # Compute win/loss ratio safely
-    def ratio_func(row):
-        if row["losses"] == 0 and row["wins"] > 0:
-            return float("inf")
-        if row["losses"] == 0 and row["wins"] == 0:
-            return 0
-        return row["wins"] / row["losses"]
-
-    weekly["ratio"] = weekly.apply(ratio_func, axis=1)
-
-    # Separate positive and negative ratios
-    weekly["ratio_pos"] = weekly["ratio"].where(weekly["ratio"] >= 1)
-    weekly["ratio_neg"] = weekly["ratio"].where(weekly["ratio"] < 1)
-
-    # bull_market_top = datetime(2021, 11, 10).timestamp()
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(x=weekly.index, y=weekly["ratio_pos"], name="Win/Loss Ratio >= 1", marker_color="green")
-    )
-    fig.add_trace(
-        go.Bar(x=weekly.index, y=weekly["ratio_neg"], name="Win/Loss Ratio < 1", marker_color="red")
-    )
-
-    # fig.add_vline(
-    #     x=bull_market_top,
-    #     line=dict(color="yellow", dash="dash"),
-    #     annotation_text="2021 Bull market top",
-    #     annotation_position="top right"
-    # )
-
-    fig.update_xaxes(type="date")
-    fig.update_layout(
-        barmode="relative",
-        title=f"Strategy {strategy_name}: Win/Loss Ratio by Week",
-        xaxis_title="Time",
-        yaxis_title="Win/Loss Ratio",
-        plot_bgcolor="#000000",
-        paper_bgcolor="#000000",
-        font=dict(color="#EEEEEE"),
-        hovermode="x unified",
-    )
-    return fig
-
-
-def draw_distribution_charts(df: pd.DataFrame):
-    """
-    Two side-by-side boxplots:
-    1) Winrate distribution by pair
-    2) Profit distribution by pair
-    """
-    by_pair = df.groupby("pair")
-    winrates = by_pair.apply(lambda x: (x["profit_abs"] > 0).mean())
-    profits = by_pair["profit_abs"].sum()
-
-    fig = make_subplots(rows=1, cols=2, subplot_titles=["Winrate Distribution", "Profit Distribution"])
-
-    fig.add_trace(
-        go.Box(y=winrates, name="Winrate", boxpoints="all", jitter=0.3, marker_color="#95DAC1"),
-        row=1, col=1
-    )
-    fig.add_trace(
-        go.Box(y=profits, name="Profit", boxpoints="all", jitter=0.3, marker_color="#95A7DA"),
-        row=1, col=2
-    )
-
-    fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(showgrid=True, zeroline=True)
-    fig.update_layout(
-        plot_bgcolor="#000000",
-        paper_bgcolor="#000000",
-        font=dict(color="#EEEEEE"),
-        hovermode="closest",
-        width=1200,
-        height=600,
-    )
-    return fig
-
-
 def compare_strategies(all_strategies):
     """
     Renders a multi-line chart comparing cumulative profits
@@ -461,16 +319,8 @@ def main():
         st.dataframe(trades_df[["pair", "profit_abs", "open_date", "close_date"]])
 
         st.subheader("Profit Over Time")
-        trades_df = trades_df.sort_values("open_date")
-        trades_df["cumulative_profit"] = trades_df["profit_abs"].cumsum()
-        fig = px.line(
-            trades_df,
-            x="open_date",
-            y="cumulative_profit",
-            title="Cumulative Profit Over Time",
-            markers=True,
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        fig_cp = draw_cumulative_profit_chart(trades_df, strategy_name)
+        st.plotly_chart(fig_cp, use_container_width=True)
 
         st.subheader("Drawdown Chart")
         fig_dd = draw_drawdown_chart(trades_df, strategy_name)
@@ -539,7 +389,7 @@ def main():
         st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("Winrate & Profit Distributions")
-        fig_dist = draw_distribution_charts(trades_df)
+        fig_dist = draw_distribution_charts(trades_df, strategy_name)
         st.plotly_chart(fig_dist, use_container_width=True)
 
 
